@@ -1,0 +1,5 @@
+streamlit
+spacy
+wikipedia-api
+sentence-transformers
+scikit-learn
