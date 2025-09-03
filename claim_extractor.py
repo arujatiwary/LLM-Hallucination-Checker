@@ -1,21 +1,22 @@
-from transformers import pipeline
+import spacy
 
-# Load NER pipeline once
-ner_pipeline = pipeline("ner", model="dslim/bert-base-NER", aggregation_strategy="simple")
+# Load English model (make sure to install: pip install spacy && python -m spacy download en_core_web_sm)
+nlp = spacy.load("en_core_web_sm")
 
 def extract_claims(text):
     """
-    Extracts factual-looking claims from text using NER as a proxy.
-    Right now, it just extracts sentences containing named entities.
+    Extracts factual claims (sentences) from text.
+    Uses spaCy sentence segmentation to avoid skipping claims.
+    Returns a list of candidate claims.
     """
-    sentences = text.split(".")
+    doc = nlp(text)
     claims = []
 
-    for sentence in sentences:
-        if not sentence.strip():
-            continue
-        entities = ner_pipeline(sentence)
-        if entities:  # only keep sentences with named entities
-            claims.append(sentence.strip())
+    for sent in doc.sents:
+        claim = sent.text.strip()
+
+        # Filter out very short fragments that aren't claims
+        if len(claim.split()) > 3:  # at least 4 words
+            claims.append(claim)
 
     return claims
