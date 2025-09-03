@@ -1,21 +1,18 @@
-import spacy
-
-nlp = spacy.load("en_core_web_sm")
+import re
 
 def extract_claims(text):
     """
-    Extracts factual claims (sentences) from text.
-    Uses spaCy sentence segmentation to avoid skipping claims.
+    Extract factual claims from text using regex-based sentence splitting.
+    Avoids spaCy dependency so it's lightweight and Streamlit Cloud friendly.
     Returns a list of candidate claims.
     """
-    doc = nlp(text)
+    # Split on sentence-ending punctuation
+    sentences = re.split(r'(?<=[.!?])\s+', text)
+
     claims = []
-
-    for sent in doc.sents:
-        claim = sent.text.strip()
-
-        # Filter out very short fragments that aren't claims
-        if len(claim.split()) > 3:  # at least 4 words
+    for sent in sentences:
+        claim = sent.strip()
+        if len(claim.split()) > 3:  # ignore fragments
             claims.append(claim)
 
     return claims
