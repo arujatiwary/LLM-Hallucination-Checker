@@ -1,53 +1,60 @@
-import random
-import numpy as np
+from duckduckgo_search import DDGS
+from transformers import pipeline
 import torch
 
-# Fix seeds for reproducibility
-random.seed(42)
-np.random.seed(42)
-torch.manual_seed(42)
+# Load NLI model (for entailment / contradiction check)
+device = 0 if torch.cuda.is_available() else -1
+print(f"Device set to use {'GPU' if device == 0 else 'CPU'}")
+
+nli_model = pipeline(
+    "text-classification",
+    model="roberta-large-mnli",
+    tokenizer="roberta-large-mnli",
+    device=device
+)
+
+def get_retriever_and_llm():
+    """
+    Returns retriever (DuckDuckGo search) and the NLI model as LLM.
+    """
+    retriever = DDGS()
+    return retriever, nli_model
+
+def search_snippets(query, retriever, num_results=5):
+    """Fetch top snippets from DuckDuckGo search."""
+    results = []
+    for r in retriever.text(query, max_results=num_results):
+        if "body" in r:
+            results.append(r["body"])
+    return results
 
 def verify_claim(claim, retriever, llm, runs=3, top_k=5):
     """
-    Verify a claim against retrieved evidence with majority voting.
+    Verifies a factual claim using web search + NLI model.
+    Returns dict: {claim, status, evidence}
     """
-    decisions = []
+    snippets = search_snippets(claim, retriever, num_results=top_k)
 
-    for _ in range(runs):
-        # Retrieve top-k evidence deterministically
-        retrieved_docs = retriever.get_relevant_documents(claim)
-        evidence_texts = [doc.page_content for doc in retrieved_docs[:top_k]]
+    if not snippets:
+        return {"claim": claim, "status": "uncertain", "evidence": None}
 
-        # Build prompt for LLM
-        context = "\n".join(evidence_texts)
-        prompt = f"""
-        Claim: {claim}
-        Evidence:
-        {context}
+    try:
+        inputs = [(claim, snippet) for snippet in snippets]
+        results = llm(inputs, truncation=True, padding=True)
+    except Exception as e:
+        return {"claim": claim, "status": "uncertain", "evidence": f"NLI error: {e}"}
 
-        Based on the evidence, classify the claim as one of:
-        - VERIFIED (evidence strongly supports it)
-        - HALLUCINATION (evidence contradicts or disproves it)
-        - UNCERTAIN (not enough clear evidence either way)
+    status = "uncertain"
+    evidence = None
+    for snippet, result in zip(snippets, results):
+        label = result["label"].upper()
+        if label == "ENTAILMENT":
+            status = "verified"
+            evidence = snippet
+            break
+        elif label == "CONTRADICTION":
+            status = "hallucination"
+            evidence = snippet
+            break
 
-        Answer with only one word: VERIFIED, HALLUCINATION, or UNCERTAIN.
-        """
-
-        response = llm.predict(prompt).strip().upper()
-
-        if "VERIFIED" in response:
-            decisions.append("VERIFIED")
-        elif "HALLUCINATION" in response:
-            decisions.append("HALLUCINATION")
-        else:
-            decisions.append("UNCERTAIN")
-
-    # Majority vote
-    final = max(set(decisions), key=decisions.count)
-
-    return {
-        "claim": claim,
-        "status": final,
-        "evidence": evidence_texts,
-        "votes": decisions
-    }
+    return {"claim": claim, "status": status, "evidence": evidence}
