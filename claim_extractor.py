@@ -1,6 +1,5 @@
 import spacy
 
-# Load English model (make sure to install: pip install spacy && python -m spacy download en_core_web_sm)
 nlp = spacy.load("en_core_web_sm")
 
 def extract_claims(text):
