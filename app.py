@@ -1,17 +1,17 @@
 import streamlit as st
-from claim_extractor import extract_claims
-from verifier import verify_claim
 import re
-from verifier import get_retriever_and_llm
+from claim_extractor import extract_claims
+from verifier import verify_claim, get_retriever_and_llm
 
-# Initialize retriever + LLM once
-retriever, llm = get_retriever_and_llm()
-
-
+# Streamlit page config
 st.set_page_config(page_title="Hallucination Detector", layout="wide")
 
 st.title("🕵️ Hallucination Detector for LLM Outputs")
 
+# Initialize retriever + LLM once
+retriever, llm = get_retriever_and_llm()
+
+# Input text
 input_text = st.text_area("Paste the LLM-generated text here:", height=200)
 
 if st.button("Check for Hallucinations"):
@@ -36,41 +36,22 @@ if st.button("Check for Hallucinations"):
                     "hallucination": "#e74c3c"  # red
                 }[result["status"]]
                 replacement = (
-                    f"<span style='background-color:{color}; padding:2px 4px; border-radius:4px;'>"
-                    f"{result['claim']}</span>"
+                    f"<span style='background-color:{color}; "
+                    f"padding:2px 4px; border-radius:4px;'>{result['claim']}</span>"
                 )
                 highlighted_text = re.sub(result["claim"], replacement, highlighted_text, 1)
 
-            # Summary
-            st.subheader("📊 Summary")
-            total = len(results)
-            verified = sum(1 for r in results if r["status"] == "verified")
-            uncertain = sum(1 for r in results if r["status"] == "uncertain")
-            hallucinations = sum(1 for r in results if r["status"] == "hallucination")
-
-            col1, col2, col3 = st.columns(3)
-            col1.metric("✔️ Verified", f"{verified}/{total}", f"{(verified/total)*100:.1f}%")
-            col2.metric("⚠️ Uncertain", f"{uncertain}/{total}", f"{(uncertain/total)*100:.1f}%")
-            col3.metric("❌ Hallucinations", f"{hallucinations}/{total}", f"{(hallucinations/total)*100:.1f}%")
-
-            # Annotated text
-            st.subheader("📝 Annotated Output")
+            # Annotated output
+            st.subheader("Annotated Output")
             st.markdown(highlighted_text, unsafe_allow_html=True)
 
-            # Claim details
-            st.subheader("🔎 Claim Details")
+            # Details section
+            st.subheader("Details")
             for result in results:
-                color_map = {
-                    "verified": "green",
-                    "uncertain": "orange",
-                    "hallucination": "red"
-                }
                 st.markdown(
                     f"- **{result['claim']}** → "
-                    f"<span style='color:{color_map[result['status']]};font-weight:bold'>{result['status'].upper()}</span>",
+                    f"<span style='color:{color};font-weight:bold'>{result['status'].upper()}</span>",
                     unsafe_allow_html=True
                 )
                 if result["evidence"]:
-                    with st.expander("See evidence"):
-                        for ev in result["evidence"]:
-                            st.markdown(f"- {ev}")
+                    st.caption(f"Evidence: {result['evidence']}")
