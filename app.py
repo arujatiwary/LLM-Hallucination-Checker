@@ -2,6 +2,11 @@ import streamlit as st
 from claim_extractor import extract_claims
 from verifier import verify_claim
 import re
+from verifier import get_retriever_and_llm
+
+# Initialize retriever + LLM once
+retriever, llm = get_retriever_and_llm()
+
 
 st.set_page_config(page_title="Hallucination Detector", layout="wide")
 
