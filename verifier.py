@@ -25,8 +25,8 @@ def verify_claim(claim, num_results=5):
         return {"claim": claim, "status": "uncertain", "evidence": []}
 
     try:
-        # Compare claim vs snippet
-        inputs = [f"{claim} </s></s> {snippet}" for snippet in snippets]
+        # Pass as (premise, hypothesis) pairs
+        inputs = [(snippet, claim) for snippet in snippets]
         results = nli_model(inputs, truncation=True, padding=True)
     except Exception as e:
         return {"claim": claim, "status": "uncertain", "evidence": [f"NLI error: {e}"]}
@@ -38,17 +38,16 @@ def verify_claim(claim, num_results=5):
         label = result["label"].upper()
         score = result["score"]
 
-        if label == "ENTAILMENT" and score > 0.7:
+        if label == "ENTAILMENT" and score > 0.6:
             status_counts["verified"] += 1
             evidence.append(snippet)
-        elif label == "CONTRADICTION" and score > 0.7:
+        elif label == "CONTRADICTION" and score > 0.6:
             status_counts["hallucination"] += 1
             evidence.append(snippet)
         else:
             status_counts["uncertain"] += 1
             evidence.append(snippet)
 
-    # Pick the majority label
     final_status = max(status_counts, key=status_counts.get)
 
     return {"claim": claim, "status": final_status, "evidence": evidence}
