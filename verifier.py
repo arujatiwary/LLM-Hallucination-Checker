@@ -6,17 +6,17 @@ import torch
 device = 0 if torch.cuda.is_available() else -1
 print(f"Device set to use {'GPU' if device == 0 else 'CPU'}")
 
-# Load NLI model (RoBERTa trained on MNLI)
+# Load NLI model
 nli_model = pipeline(
     "text-classification",
     model="roberta-large-mnli",
     tokenizer="roberta-large-mnli",
     device=device,
-    return_all_scores=True   # get all 3 scores: entailment / contradiction / neutral
+    return_all_scores=True   # so we see entailment/contradiction/neutral scores
 )
 
 def get_retriever_and_llm():
-    """Return DuckDuckGo retriever and the NLI model."""
+    """Return retriever (DuckDuckGo) and the NLI model."""
     retriever = DDGS()
     return retriever, nli_model
 
@@ -28,36 +28,36 @@ def search_snippets(query, retriever, num_results=5):
             results.append(r["body"])
     return results
 
-def verify_claim(claim, retriever, llm, runs=3, top_k=5):
+def verify_claim(claim, retriever, llm, top_k=5):
     """
-    Verify claim with multiple search runs and majority vote.
+    Verify a claim using DuckDuckGo search + RoBERTa NLI.
     """
-    labels = []
-    evidence_map = {}
+    snippets = search_snippets(claim, retriever, num_results=top_k)
 
-    for _ in range(runs):
-        snippets = search_snippets(claim, retriever, num_results=top_k)
-        if not snippets:
+    if not snippets:
+        return {"claim": claim, "status": "uncertain", "evidence": None}
+
+    best_label = "NEUTRAL"
+    best_score = -1
+    best_snippet = None
+
+    for snippet in snippets:
+        try:
+            results = llm([(snippet, claim)], truncation=True)
+            if results and isinstance(results[0], list):
+                for res in results[0]:
+                    if res["score"] > best_score:
+                        best_score = res["score"]
+                        best_label = res["label"].upper()
+                        best_snippet = snippet
+        except Exception:
             continue
 
-        for snippet in snippets:
-            prompt = f"Claim: \"{claim}\"\nEvidence: \"{snippet}\"\nAnswer with ENTAILMENT, CONTRADICTION, or NEUTRAL."
-            try:
-                result = llm.invoke(prompt).content.strip().upper()
-                labels.append(result)
-                if result in ["ENTAILMENT", "CONTRADICTION"]:
-                    evidence_map[result] = snippet
-            except Exception:
-                continue
-
-    if not labels:
-        return {"claim": claim, "status": "uncertain", "evidence": None}
-
-    # majority vote
-    final = max(set(labels), key=labels.count)
-    if final == "ENTAILMENT":
-        return {"claim": claim, "status": "verified", "evidence": evidence_map.get("ENTAILMENT")}
-    elif final == "CONTRADICTION":
-        return {"claim": claim, "status": "hallucination", "evidence": evidence_map.get("CONTRADICTION")}
+    if best_label == "ENTAILMENT":
+        status = "verified"
+    elif best_label == "CONTRADICTION":
+        status = "hallucination"
     else:
-        return {"claim": claim, "status": "uncertain", "evidence": None}
+        status = "uncertain"
+
+    return {"claim": claim, "status": status, "evidence": best_snippet}
