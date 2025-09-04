@@ -16,7 +16,7 @@ nli_model = pipeline(
 )
 
 def get_retriever_and_llm():
-    """Return retriever and the NLI model."""
+    """Return retriever (DuckDuckGo) and the NLI model."""
     retriever = DDGS()
     return retriever, nli_model
 
@@ -28,9 +28,10 @@ def search_snippets(query, retriever, num_results=5):
             results.append(r["body"])
     return results
 
-def verify_claim(claim, retriever, llm, runs=1, top_k=5):
+def verify_claim(claim, retriever, llm, top_k=5):
     """
-    Verifies a claim using search + NLI model.
+    Verifies a claim using DuckDuckGo search + NLI model.
+    Picks the label with the highest score across snippets.
     """
     snippets = search_snippets(claim, retriever, num_results=top_k)
 
@@ -43,23 +44,22 @@ def verify_claim(claim, retriever, llm, runs=1, top_k=5):
 
     for snippet in snippets:
         try:
-            # Format input for MNLI
-            input_text = f"{snippet} </s></s> {claim}"
-            outputs = llm(input_text)
-
-            if not outputs or not isinstance(outputs, list):
+            result = llm(f"{snippet}</s></s>{claim}", truncation=True)
+            if not result or not isinstance(result[0], list):
                 continue
 
-            for res in outputs[0]:
-                if res["score"] > best_score:
-                    best_score = res["score"]
-                    best_label = res["label"].upper()
-                    best_snippet = snippet
+            for score_dict in result[0]:
+                label = score_dict["label"].upper()
+                score = score_dict["score"]
 
-        except Exception as e:
+                if score > best_score:
+                    best_score = score
+                    best_label = label
+                    best_snippet = snippet
+        except Exception:
             continue
 
-    # Map labels to statuses
+    # Map to statuses
     if best_label == "ENTAILMENT":
         status = "verified"
     elif best_label == "CONTRADICTION":
@@ -67,9 +67,4 @@ def verify_claim(claim, retriever, llm, runs=1, top_k=5):
     else:
         status = "uncertain"
 
-    return {
-        "claim": claim,
-        "status": status,
-        "evidence": best_snippet,
-        "confidence": round(best_score, 3)
-    }
+    return {"claim": claim, "status": status, "evidence": best_snippet}
