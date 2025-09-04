@@ -38,17 +38,15 @@ def classify_nli(premise, hypothesis):
     label_id = int(probs.argmax())
     return label_map[label_id], float(probs[label_id])
 
+# Modified verify_claim function snippet
 def verify_claim(claim, retriever, llm=None, top_k=5):
-    print(f"\nVerifying claim: '{claim}'")
-    snippets = search_snippets(claim, retriever, num_results=top_k)
-
-    if not snippets:
-        print("No snippets available to verify the claim.")
-        return {"claim": claim, "status": "uncertain", "evidence": None}
+    # ... (previous code) ...
 
     best_status = "uncertain"
-    best_conf = 0
+    best_conf = 0.0 # Initialize with float
     best_snippet = None
+
+    CONFIDENCE_THRESHOLD = 0.70 # Adjust as needed. Start with a moderate value.
 
     print("\n--- NLI Classification Results for Each Snippet ---")
     for i, snippet in enumerate(snippets):
@@ -59,43 +57,33 @@ def verify_claim(claim, retriever, llm=None, top_k=5):
             print(f"    Hypothesis (Claim): {claim}")
             print(f"    NLI Result: Label='{label}', Score={score:.4f}")
 
-            if score > best_conf:
-                best_conf = score
-                best_snippet = snippet
-                if label == "ENTAILMENT":
+            # Only consider updating if the current score is higher,
+            # or if the current status is weaker and this new classification is strong enough.
+
+            # Prioritize stronger classifications
+            if label == "ENTAILMENT" and score >= CONFIDENCE_THRESHOLD:
+                if best_status != "verified" or score > best_conf: # Update if first verified, or more confident verified
                     best_status = "verified"
-                elif label == "CONTRADICTION":
+                    best_conf = score
+                    best_snippet = snippet
+            elif label == "CONTRADICTION" and score >= CONFIDENCE_THRESHOLD:
+                # Contradiction might override uncertain or even less confident verified
+                # Decision: if a strong contradiction is found, it's a hallucination
+                if best_status != "hallucination" or score > best_conf: # Update if first hallucination, or more confident hallucination
                     best_status = "hallucination"
-                # If it's NEUTRAL and it's the highest confidence so far, it keeps best_status as uncertain
-                elif label == "NEUTRAL":
-                    if best_status != "verified" and best_status != "hallucination": # Only update if no stronger status found
+                    best_conf = score
+                    best_snippet = snippet
+            elif label == "NEUTRAL":
+                # Only update to uncertain if it's the highest score AND no strong entailment/contradiction has been found yet
+                if best_conf < CONFIDENCE_THRESHOLD: # If we haven't found a strong E/C yet
+                    if score > best_conf:
                         best_status = "uncertain"
+                        best_conf = score
+                        best_snippet = snippet
+
         except Exception as e:
             print(f"  Error classifying snippet {i+1}: {e}")
             continue
 
     print("\n--- Final Verification Result ---")
     return {"claim": claim, "status": best_status, "evidence": best_snippet}
-
-# Example Usage:
-if __name__ == "__main__":
-    retriever, llm_model = get_retriever_and_llm()
-
-    claims_to_test = [
-        "The capital of France is Paris.",
-        "Humans can breathe underwater unaided.",
-        "The Eiffel Tower is located in Rome.",
-        "The sun is a star.",
-        "The moon is made of cheese."
-    ]
-
-    for claim_to_verify in claims_to_test:
-        result = verify_claim(claim_to_verify, retriever, top_k=10) # Increased top_k for better chances
-        print(f"Claim: \"{result['claim']}\"")
-        print(f"Status: {result['status']}")
-        if result['evidence']:
-            print(f"Evidence (first 100 chars): \"{result['evidence'][:100]}...\"")
-        else:
-            print("No specific evidence found.")
-        print("-" * 50)
-        
