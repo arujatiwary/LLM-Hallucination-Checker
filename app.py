@@ -4,7 +4,7 @@ from claim_extractor import extract_claims
 from verifier import verify_claim # Only import verify_claim now
 
 # Streamlit page config
-st.set_set_page_config(page_title="Hallucination Detector", layout="wide")
+st.set_page_config(page_title="Hallucination Detector", layout="wide")
 
 st.title("🕵️ Hallucination Detector for LLM Outputs")
 
