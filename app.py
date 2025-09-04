@@ -24,7 +24,7 @@ if st.button("Check for Hallucinations"):
             st.write("No factual claims detected.")
         else:
             # Verify all claims
-            results = [verify_claim(claim, retriever, llm, top_k=5) for claim in claims]
+            results = [verify_claim(claim, retriever, llm, top_k=6) for claim in claims]
 
 
             # Highlight text
