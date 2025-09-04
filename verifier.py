@@ -28,37 +28,48 @@ def search_snippets(query, retriever, num_results=5):
             results.append(r["body"])
     return results
 
-def verify_claim(claim, retriever, llm, runs=3, top_k=5, threshold=0.6):
+def verify_claim(claim, retriever, llm, runs=3, top_k=5):
     """
-    Verifies a factual claim using web search + NLI model.
-    Returns dict: {claim, status, evidence}
+    Verifies a claim using search + LLM/NLI.
+    Always assigns the highest scoring label instead of defaulting to uncertain.
     """
-    snippets = search_snippets(claim, retriever, num_results=top_k)
+    try:
+        docs = retriever.get_relevant_documents(claim)
+        snippets = [doc.page_content for doc in docs[:top_k]]
+    except Exception as e:
+        return {"claim": claim, "status": "uncertain", "evidence": f"Retriever error: {e}"}
 
     if not snippets:
         return {"claim": claim, "status": "uncertain", "evidence": None}
 
-    try:
-        # IMPORTANT: premise = snippet, hypothesis = claim
-        inputs = [(snippet, claim) for snippet in snippets]
-        results = llm(inputs, truncation=True, padding=True)
-    except Exception as e:
-        return {"claim": claim, "status": "uncertain", "evidence": f"NLI error: {e}"}
+    best_label = "NEUTRAL"
+    best_score = -1
+    best_snippet = None
 
-    status = "uncertain"
-    evidence = None
+    for snippet in snippets:
+        try:
+            prompt = f"""
+            Claim: "{claim}"
+            Evidence: "{snippet}"
 
-    for snippet, scores in zip(snippets, results):
-        # convert list of dicts -> {label: score}
-        score_map = {s["label"].upper(): s["score"] for s in scores}
+            result = llm.invoke(prompt).content.strip().upper()
+        except Exception as e:
+            continue
 
-        if score_map.get("ENTAILMENT", 0) > threshold:
-            status = "verified"
-            evidence = snippet
-            break
-        elif score_map.get("CONTRADICTION", 0) > threshold:
-            status = "hallucination"
-            evidence = snippet
-            break
+        # crude scoring (could refine with logprobs if available)
+        score = 1.0  
+        if score > best_score:
+            best_score = score
+            best_label = result
+            best_snippet = snippet
 
-    return {"claim": claim, "status": status, "evidence": evidence}
+    # map to statuses
+    if best_label == "ENTAILMENT":
+        status = "verified"
+    elif best_label == "CONTRADICTION":
+        status = "hallucination"
+    else:
+        status = "uncertain"
+
+    return {"claim": claim, "status": status, "evidence": best_snippet}
+
