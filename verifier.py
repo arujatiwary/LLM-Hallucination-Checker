@@ -12,7 +12,7 @@ nli_model = pipeline(
     model="roberta-large-mnli",
     tokenizer="roberta-large-mnli",
     device=device,
-    top_k=None  # get all labels with scores
+    return_all_scores=True   # so we get entailment/contradiction/neutral
 )
 
 def get_retriever_and_llm():
@@ -23,33 +23,17 @@ def get_retriever_and_llm():
 def search_snippets(query, retriever, num_results=5):
     """Fetch top snippets from DuckDuckGo search."""
     results = []
-    try:
-        for r in retriever.text(query, max_results=num_results):
-            if "body" in r:
-                results.append(r["body"])
-    except Exception as e:
-        print("Retriever error:", e)
+    for r in retriever.text(query, max_results=num_results):
+        if "body" in r:
+            results.append(r["body"])
     return results
-
-def _normalize_label(label: str) -> str:
-    """Map model labels to ENTAILMENT/CONTRADICTION/NEUTRAL."""
-    lab = label.upper()
-    mapping = {
-        "LABEL_0": "CONTRADICTION",
-        "LABEL_1": "NEUTRAL",
-        "LABEL_2": "ENTAILMENT",
-        "CONTRADICTION": "CONTRADICTION",
-        "NEUTRAL": "NEUTRAL",
-        "ENTAILMENT": "ENTAILMENT",
-    }
-    return mapping.get(lab, "NEUTRAL")
 
 def verify_claim(claim, retriever, llm, top_k=5):
     """
-    Verify a claim using DuckDuckGo + RoBERTa-MNLI.
-    Returns dict: {claim, status, evidence}
+    Verifies a claim using DuckDuckGo snippets + NLI model.
     """
     snippets = search_snippets(claim, retriever, num_results=top_k)
+
     if not snippets:
         return {"claim": claim, "status": "uncertain", "evidence": None}
 
@@ -57,26 +41,20 @@ def verify_claim(claim, retriever, llm, top_k=5):
     best_score = -1
     best_snippet = None
 
-    for snip in snippets:
+    for snippet in snippets:
         try:
-            out = llm({"text": snip, "text_pair": claim})
-            out = out[0]  # list of dicts
-            top = max(out, key=lambda d: d["score"])
-            label = _normalize_label(top["label"])
-
-            print(f"\nClaim: {claim}")
-            print(f"Snippet: {snip}")
-            print(f"Model raw: {out}")
-            print(f"Chosen label: {label} (score {top['score']:.4f})")
-
-            if top["score"] > best_score:
-                best_score = top["score"]
-                best_label = label
-                best_snippet = snip
-        except Exception as e:
-            print("NLI error:", e)
+            # Run NLI (premise = snippet, hypothesis = claim)
+            outputs = llm(snippet, claim)[0]  
+            # Example: [{'label': 'ENTAILMENT', 'score': 0.87}, ...]
+            for o in outputs:
+                if o["score"] > best_score:
+                    best_score = o["score"]
+                    best_label = o["label"].upper()
+                    best_snippet = snippet
+        except Exception:
             continue
 
+    # Map to statuses
     if best_label == "ENTAILMENT":
         status = "verified"
     elif best_label == "CONTRADICTION":
