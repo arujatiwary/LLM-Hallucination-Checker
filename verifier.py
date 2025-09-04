@@ -1,25 +1,22 @@
 import torch
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 import torch.nn.functional as F
-from duckduckgo_search import DDGS # Import DDGS directly here
-import os # For potential cache directory setup
+from duckduckgo_search import DDGS
+import os
 
 # --- Device Setup ---
-# Prioritize CUDA if available, otherwise use CPU
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Verifier Device set to use {device}")
 
 # --- NLI Model Loading ---
 MODEL_NAME = "roberta-large-mnli"
 try:
-    # Attempt to load from local cache first
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
     model = AutoModelForSequenceClassification.from_pretrained(MODEL_NAME).to(device)
     print(f"Verifier: Successfully loaded NLI model '{MODEL_NAME}'.")
 except Exception as e:
     print(f"Verifier: Error loading NLI model '{MODEL_NAME}': {e}")
     print("Verifier: Attempting to load with an explicit cache directory.")
-    # Fallback to a specified cache directory if there are permission issues
     cache_dir = os.path.join(os.path.expanduser("~"), ".cache", "huggingface")
     os.makedirs(cache_dir, exist_ok=True)
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, cache_dir=cache_dir)
@@ -28,7 +25,7 @@ except Exception as e:
 
 label_map = {0: "CONTRADICTION", 1: "NEUTRAL", 2: "ENTAILMENT"}
 
-def search_snippets(query, num_results=5):
+def search_snippets(query, num_results=10): # Increased default num_results for more chances
     """
     Searches DuckDuckGo for snippets relevant to the query.
     Returns a list of snippet bodies.
@@ -36,20 +33,28 @@ def search_snippets(query, num_results=5):
     results = []
     print(f"\n[DEBUG verifier.py] Searching for: '{query}' with {num_results} results...")
     try:
-        # Using DDGS context manager for cleaner resource handling
         with DDGS() as ddgs:
-            ddgs_results = list(ddgs.text(query, max_results=num_results))
+            # Added more specific language to the search query for better relevance
+            # This is a simple heuristic and can be expanded
+            refined_query = query + " factual information" # Try to nudge search towards facts
+            print(f"  [DEBUG verifier.py] Using refined search query: '{refined_query}'")
+
+            ddgs_results = list(ddgs.text(refined_query, max_results=num_results))
+            if not ddgs_results:
+                print(f"  [DEBUG verifier.py] No results from DDGS for '{refined_query}', trying original query.")
+                ddgs_results = list(ddgs.text(query, max_results=num_results))
+
+
             for i, r in enumerate(ddgs_results):
-                if "body" in r:
+                if "body" in r and r["body"].strip(): # Ensure snippet body is not empty
                     results.append(r["body"])
                     print(f"  [DEBUG verifier.py] Snippet {i+1} (first 100 chars): {r['body'][:100]}...")
                 else:
-                    print(f"  [DEBUG verifier.py] Snippet {i+1} had no 'body' key: {r}")
+                    print(f"  [DEBUG verifier.py] Snippet {i+1} had no or empty 'body' key: {r}")
             if not results:
-                print("[DEBUG verifier.py] No 'body' content found in any search results for the query.")
+                print("[DEBUG verifier.py] No substantial 'body' content found in any search results.")
     except Exception as e:
         print(f"[ERROR verifier.py] DuckDuckGo search failed for query '{query}': {e}")
-        # Ensure results is an empty list if search fails
         results = []
     return results
 
@@ -58,8 +63,6 @@ def classify_nli(premise, hypothesis):
     Runs NLI on (premise, hypothesis) and returns the best label and its score.
     Uses the pre-loaded tokenizer and model.
     """
-    # Truncate inputs to prevent tokenization errors with very long texts
-    # max_length for RoBERTa is typically 512
     inputs = tokenizer(premise, hypothesis, return_tensors="pt", truncation=True, max_length=512).to(device)
     with torch.no_grad():
         logits = model(**inputs).logits
@@ -68,7 +71,7 @@ def classify_nli(premise, hypothesis):
     label_id = int(probs.argmax())
     return label_map[label_id], float(probs[label_id])
 
-def verify_claim(claim, top_k=5):
+def verify_claim(claim, top_k=10): # Increased default top_k here too
     """
     Verifies a factual claim against search snippets using an NLI model.
     Returns dict: {claim, status, evidence: list of snippets}
@@ -78,30 +81,28 @@ def verify_claim(claim, top_k=5):
 
     if not snippets:
         print(f"[DEBUG verifier.py] No snippets available to verify the claim '{claim}'. Returning 'uncertain'.")
-        return {"claim": claim, "status": "uncertain", "evidence": []} # Return empty list for consistency
+        return {"claim": claim, "status": "uncertain", "evidence": []}
 
-    # Debugging lines for 'snippets' before iteration
     print(f"[DEBUG verifier.py] Type of 'snippets' before iteration: {type(snippets)}")
     print(f"[DEBUG verifier.py] Number of snippets received: {len(snippets)}")
     if snippets:
         print(f"[DEBUG verifier.py] First snippet (first 100 chars): {snippets[0][:100]}...")
-    # END Debugging lines
 
     best_status = "uncertain"
     best_conf = 0.0
-    best_snippet = None # Will store the single best snippet
-    all_evidence_snippets = [] # Store all snippets used for verification
+    best_snippet = None
+    all_evidence_snippets = []
 
-    # Tunable confidence threshold for strong classifications
-    CONFIDENCE_THRESHOLD = 0.75 # Adjust as needed (e.g., 0.7 to 0.9)
+    # Tunable confidence threshold for strong classifications - Increased slightly
+    CONFIDENCE_THRESHOLD = 0.80 # Try a higher threshold to be more strict
 
     print("\n--- NLI Classification Results for Each Snippet ---")
     for i, snippet in enumerate(snippets):
-        all_evidence_snippets.append(snippet) # Add every snippet to the evidence list
+        all_evidence_snippets.append(snippet)
         try:
             label, score = classify_nli(snippet, claim)
             print(f"  [DEBUG verifier.py] Snippet {i+1} vs Claim:")
-            print(f"    Premise (Snippet): {snippet[:150]}...") # Truncate for display
+            print(f"    Premise (Snippet): {snippet[:150]}...")
             print(f"    Hypothesis (Claim): {claim}")
             print(f"    NLI Result: Label='{label}', Score={score:.4f}")
 
@@ -113,8 +114,7 @@ def verify_claim(claim, top_k=5):
                     best_conf = score
                     best_snippet = snippet
             elif label == "CONTRADICTION" and score >= CONFIDENCE_THRESHOLD:
-                # Contradiction gets priority if strong enough
-                # If a strong contradiction is found, it immediately becomes the best status
+                # If a strong contradiction is found, it overrides everything else
                 if best_status != "hallucination" or score > best_conf:
                     best_status = "hallucination"
                     best_conf = score
@@ -123,10 +123,10 @@ def verify_claim(claim, top_k=5):
                 # Only update to 'uncertain' if no strong 'verified' or 'hallucination'
                 # has been established yet, AND this NEUTRAL score is higher than current best_conf.
                 if best_status not in ["verified", "hallucination"]:
-                    if score > best_conf:
+                    if score > best_conf: # Only update if more confident neutral
                         best_status = "uncertain"
                         best_conf = score
-                        best_snippet = snippet # Assign snippet if this NEUTRAL is the highest confidence
+                        best_snippet = snippet
             # --- End Logic for updating best_status ---
 
         except Exception as e:
@@ -134,8 +134,7 @@ def verify_claim(claim, top_k=5):
             continue
 
     print(f"\n[DEBUG verifier.py] Final decision for claim '{claim}': Status='{best_status}', Confidence={best_conf:.4f}")
-    
-    # Return all snippets as evidence for the UI
+
     return {"claim": claim, "status": best_status, "evidence": all_evidence_snippets}
 
 # Example Usage (for testing verifier.py directly)
@@ -149,11 +148,14 @@ if __name__ == "__main__":
         "The moon is made of cheese.",              # Expected: hallucination
         "The Earth revolves around the Sun.",       # Expected: verified
         "Dogs lay eggs.",                           # Expected: hallucination
-        "The Amazon rainforest is in Africa."       # Expected: hallucination
+        "The Amazon rainforest is in Africa.",      # Expected: hallucination
+        "The Taj Mahal is located in India.",       # Should now find results
+        "Albert Einstein discovered penicillin.",   # Should have better search results
+        "Barack Obama was the 44th president of the United States." # Re-test this
     ]
 
     for claim_to_verify in claims_to_test:
-        result = verify_claim(claim_to_verify, top_k=10) # Increased top_k for better chances
+        result = verify_claim(claim_to_verify, top_k=10)
         print(f"\n--- Result for: \"{result['claim']}\" ---")
         print(f"Status: {result['status'].upper()}")
         if result['evidence']:
