@@ -169,5 +169,3 @@ if __name__ == "__main__":
         else:
             print("No specific evidence found.")
         print("-" * 70)
-
-print("Let me generate an image of a detective examining a complex case file, representing the detailed debugging and verification process.") 
