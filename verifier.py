@@ -28,42 +28,36 @@ def search_snippets(query, retriever, num_results=5):
             results.append(r["body"])
     return results
 
-def verify_claim(claim, retriever, llm, top_k=5):
+def verify_claim(claim, retriever, llm, runs=3, top_k=5):
     """
-    Verifies a claim using search + NLI.
-    Picks the highest-confidence result from the snippets.
+    Verify claim with multiple search runs and majority vote.
     """
-    try:
+    labels = []
+    evidence_map = {}
+
+    for _ in range(runs):
         snippets = search_snippets(claim, retriever, num_results=top_k)
-    except Exception as e:
-        return {"claim": claim, "status": "uncertain", "evidence": f"Retriever error: {e}"}
-
-    if not snippets:
-        return {"claim": claim, "status": "uncertain", "evidence": None}
-
-    best_label = "NEUTRAL"
-    best_score = -1
-    best_snippet = None
-
-    for snippet in snippets:
-        try:
-            # Compare snippet (premise) vs claim (hypothesis)
-            results = llm((snippet, claim), truncation=True)
-            # results looks like: [[{'label': 'CONTRADICTION', 'score': 0.01}, ... ]]
-            for r in results[0]:
-                if r["score"] > best_score:
-                    best_score = r["score"]
-                    best_label = r["label"].upper()
-                    best_snippet = snippet
-        except Exception as e:
+        if not snippets:
             continue
 
-    # Map labels to statuses
-    if best_label == "ENTAILMENT":
-        status = "verified"
-    elif best_label == "CONTRADICTION":
-        status = "hallucination"
-    else:
-        status = "uncertain"
+        for snippet in snippets:
+            prompt = f"Claim: \"{claim}\"\nEvidence: \"{snippet}\"\nAnswer with ENTAILMENT, CONTRADICTION, or NEUTRAL."
+            try:
+                result = llm.invoke(prompt).content.strip().upper()
+                labels.append(result)
+                if result in ["ENTAILMENT", "CONTRADICTION"]:
+                    evidence_map[result] = snippet
+            except Exception:
+                continue
 
-    return {"claim": claim, "status": status, "evidence": best_snippet}
+    if not labels:
+        return {"claim": claim, "status": "uncertain", "evidence": None}
+
+    # majority vote
+    final = max(set(labels), key=labels.count)
+    if final == "ENTAILMENT":
+        return {"claim": claim, "status": "verified", "evidence": evidence_map.get("ENTAILMENT")}
+    elif final == "CONTRADICTION":
+        return {"claim": claim, "status": "hallucination", "evidence": evidence_map.get("CONTRADICTION")}
+    else:
+        return {"claim": claim, "status": "uncertain", "evidence": None}
