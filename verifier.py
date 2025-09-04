@@ -12,16 +12,14 @@ nli_model = pipeline(
     model="roberta-large-mnli",
     tokenizer="roberta-large-mnli",
     device=device,
-    return_all_scores=True   # so we get entailment/contradiction/neutral
+    return_all_scores=True
 )
 
 def get_retriever_and_llm():
-    """Return retriever (DuckDuckGo) and the NLI model."""
     retriever = DDGS()
     return retriever, nli_model
 
 def search_snippets(query, retriever, num_results=5):
-    """Fetch top snippets from DuckDuckGo search."""
     results = []
     for r in retriever.text(query, max_results=num_results):
         if "body" in r:
@@ -29,9 +27,6 @@ def search_snippets(query, retriever, num_results=5):
     return results
 
 def verify_claim(claim, retriever, llm, top_k=5):
-    """
-    Verifies a claim using DuckDuckGo snippets + NLI model.
-    """
     snippets = search_snippets(claim, retriever, num_results=top_k)
 
     if not snippets:
@@ -43,18 +38,16 @@ def verify_claim(claim, retriever, llm, top_k=5):
 
     for snippet in snippets:
         try:
-            # Run NLI (premise = snippet, hypothesis = claim)
-            outputs = llm(snippet, claim)[0]  
-            # Example: [{'label': 'ENTAILMENT', 'score': 0.87}, ...]
+            # ✅ Correct NLI usage
+            outputs = llm(sequence=snippet, text_pair=claim)[0]
             for o in outputs:
                 if o["score"] > best_score:
                     best_score = o["score"]
                     best_label = o["label"].upper()
                     best_snippet = snippet
-        except Exception:
+        except Exception as e:
             continue
 
-    # Map to statuses
     if best_label == "ENTAILMENT":
         status = "verified"
     elif best_label == "CONTRADICTION":
