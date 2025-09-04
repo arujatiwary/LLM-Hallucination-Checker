@@ -12,11 +12,11 @@ nli_model = pipeline(
     model="roberta-large-mnli",
     tokenizer="roberta-large-mnli",
     device=device,
-    return_all_scores=True   # gives entailment/contradiction/neutral scores
+    return_all_scores=True
 )
 
 def get_retriever_and_llm():
-    """Return retriever and the NLI model (llm placeholder)."""
+    """Return retriever and the NLI model."""
     retriever = DDGS()
     return retriever, nli_model
 
@@ -31,7 +31,6 @@ def search_snippets(query, retriever, num_results=5):
 def verify_claim(claim, retriever, llm, runs=1, top_k=5):
     """
     Verifies a claim using search + NLI model.
-    Always assigns label based on highest score.
     """
     snippets = search_snippets(claim, retriever, num_results=top_k)
 
@@ -44,14 +43,13 @@ def verify_claim(claim, retriever, llm, runs=1, top_k=5):
 
     for snippet in snippets:
         try:
-            # Format for NLI: premise = snippet, hypothesis = claim
-            inputs = (snippet, claim)
-            outputs = llm(inputs, truncation=True, padding=True)
+            # Format input for MNLI
+            input_text = f"{snippet} </s></s> {claim}"
+            outputs = llm(input_text)
 
             if not outputs or not isinstance(outputs, list):
                 continue
 
-            # outputs is a list of dicts with label + score
             for res in outputs[0]:
                 if res["score"] > best_score:
                     best_score = res["score"]
@@ -69,4 +67,9 @@ def verify_claim(claim, retriever, llm, runs=1, top_k=5):
     else:
         status = "uncertain"
 
-    return {"claim": claim, "status": status, "evidence": best_snippet}
+    return {
+        "claim": claim,
+        "status": status,
+        "evidence": best_snippet,
+        "confidence": round(best_score, 3)
+    }
