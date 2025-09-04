@@ -1,30 +1,38 @@
-# verifier.py
-import re
-import torch
+from duckduckgo_search import DDGS
 from transformers import pipeline
-try:
-    # Preferred (new name)
-    from ddgs import DDGS
-except ImportError:
-    # Backward-compat (older package name still works but warns)
-    from duckduckgo_search import DDGS
+import torch
 
-# -----------------------
-# Device & NLI pipeline
-# -----------------------
+# Device setup
 device = 0 if torch.cuda.is_available() else -1
 print(f"Device set to use {'GPU' if device == 0 else 'CPU'}")
 
+# Load NLI model
 nli_model = pipeline(
     "text-classification",
     model="roberta-large-mnli",
     tokenizer="roberta-large-mnli",
     device=device,
-    top_k=None  # returns all labels with scores (replacement for return_all_scores=True)
+    top_k=None  # get all labels with scores
 )
 
-# Robust label normalization for different HF configs
-def _norm(label: str) -> str:
+def get_retriever_and_llm():
+    """Return retriever (DuckDuckGo) and the NLI model."""
+    retriever = DDGS()
+    return retriever, nli_model
+
+def search_snippets(query, retriever, num_results=5):
+    """Fetch top snippets from DuckDuckGo search."""
+    results = []
+    try:
+        for r in retriever.text(query, max_results=num_results):
+            if "body" in r:
+                results.append(r["body"])
+    except Exception as e:
+        print("Retriever error:", e)
+    return results
+
+def _normalize_label(label: str) -> str:
+    """Map model labels to ENTAILMENT/CONTRADICTION/NEUTRAL."""
     lab = label.upper()
     mapping = {
         "LABEL_0": "CONTRADICTION",
@@ -34,117 +42,46 @@ def _norm(label: str) -> str:
         "NEUTRAL": "NEUTRAL",
         "ENTAILMENT": "ENTAILMENT",
     }
-    return mapping.get(lab, lab)
+    return mapping.get(lab, "NEUTRAL")
 
-def get_retriever_and_llm():
-    """Return (retriever, nli_model) to match your app imports."""
-    # Force English, avoid random-language snippets
-    retriever = DDGS()
-    return retriever, nli_model
-
-# -----------------------
-# Retrieval
-# -----------------------
-def search_snippets(query: str, retriever, num_results: int = 6):
+def verify_claim(claim, retriever, llm, top_k=5):
     """
-    Use DuckDuckGo to fetch snippet bodies (fallback to title).
-    We enforce English via region where possible.
-    """
-    snippets = []
-    # DDGS().text(...) is a generator of dicts: {title, href, body}
-    try:
-        with retriever as ddg:
-            for r in ddg.text(
-                query,
-                region="us-en",     # enforce English results
-                safesearch="off",
-                timelimit=None,
-                max_results=num_results
-            ):
-                body = r.get("body") or ""
-                title = r.get("title") or ""
-                snippet = body.strip() or title.strip()
-                if not snippet:
-                    continue
-                # light clean-up
-                snippet = re.sub(r"\s+", " ", snippet)
-                snippets.append(snippet)
-    except TypeError:
-        # Some versions of DDGS are context-manager-less; fallback
-        for r in retriever.text(
-            query,
-            region="us-en",
-            safesearch="off",
-            timelimit=None,
-            max_results=num_results
-        ):
-            body = r.get("body") or ""
-            title = r.get("title") or ""
-            snippet = body.strip() or title.strip()
-            if not snippet:
-                continue
-            snippet = re.sub(r"\s+", " ", snippet)
-            snippets.append(snippet)
-    return snippets
-
-# -----------------------
-# Verification
-# -----------------------
-def verify_claim(claim: str, retriever, llm, top_k: int = 6):
-    """
-    Verify a claim with web snippets + RoBERTa MNLI.
-    - premise = snippet
-    - hypothesis = claim
-    Majority vote across snippets; ties broken by summed scores.
+    Verify a claim using DuckDuckGo + RoBERTa-MNLI.
+    Returns dict: {claim, status, evidence}
     """
     snippets = search_snippets(claim, retriever, num_results=top_k)
-
     if not snippets:
         return {"claim": claim, "status": "uncertain", "evidence": None}
 
-    vote_counts = {"ENTAILMENT": 0, "CONTRADICTION": 0, "NEUTRAL": 0}
-    score_sums  = {"ENTAILMENT": 0.0, "CONTRADICTION": 0.0, "NEUTRAL": 0.0}
-
-    per_snippet_best = []
+    best_label = "NEUTRAL"
+    best_score = -1
+    best_snippet = None
 
     for snip in snippets:
         try:
-            # Call NLI with (premise, hypothesis)
-            # Using dict style ensures correct pairing for HF pipelines
-            out = llm({"text": snip, "text_pair": claim}, truncation=True)
-            # top_k=None => out is a list [ {label, score}, {label, score}, {label, score} ]
-            if not out or not isinstance(out, list):
-                continue
-            # Pick highest scoring label for this snippet
-            best = max(out, key=lambda d: d["score"])
-            best_label = _norm(best["label"])
-            best_score = float(best["score"])
+            out = llm({"text": snip, "text_pair": claim})
+            out = out[0]  # list of dicts
+            top = max(out, key=lambda d: d["score"])
+            label = _normalize_label(top["label"])
 
-            vote_counts[best_label] += 1
-            score_sums[best_label]  += best_score
-            per_snippet_best.append((snip, best_label, best_score))
-        except Exception:
+            print(f"\nClaim: {claim}")
+            print(f"Snippet: {snip}")
+            print(f"Model raw: {out}")
+            print(f"Chosen label: {label} (score {top['score']:.4f})")
+
+            if top["score"] > best_score:
+                best_score = top["score"]
+                best_label = label
+                best_snippet = snip
+        except Exception as e:
+            print("NLI error:", e)
             continue
 
-    if not per_snippet_best:
-        return {"claim": claim, "status": "uncertain", "evidence": None}
-
-    # Majority vote first
-    winner = max(vote_counts.items(), key=lambda kv: kv[1])[0]
-    # Tie-break on summed scores if needed
-    tied = [k for k, v in vote_counts.items() if v == vote_counts[winner]]
-    if len(tied) > 1:
-        winner = max(tied, key=lambda k: score_sums[k])
-
-    # Pick strongest evidence among snippets that voted for the winner
-    candidate_snips = [x for x in per_snippet_best if x[1] == winner]
-    evidence_snip = max(candidate_snips, key=lambda x: x[2])[0] if candidate_snips else per_snippet_best[0][0]
-
-    if winner == "ENTAILMENT":
+    if best_label == "ENTAILMENT":
         status = "verified"
-    elif winner == "CONTRADICTION":
+    elif best_label == "CONTRADICTION":
         status = "hallucination"
     else:
         status = "uncertain"
 
-    return {"claim": claim, "status": status, "evidence": evidence_snip}
+    return {"claim": claim, "status": status, "evidence": best_snippet}
