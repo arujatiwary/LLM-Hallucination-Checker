@@ -6,17 +6,17 @@ import torch
 device = 0 if torch.cuda.is_available() else -1
 print(f"Device set to use {'GPU' if device == 0 else 'CPU'}")
 
-# Load NLI model
+# Load NLI model (RoBERTa trained on MNLI)
 nli_model = pipeline(
     "text-classification",
     model="roberta-large-mnli",
     tokenizer="roberta-large-mnli",
     device=device,
-    return_all_scores=True   # so we see entailment/contradiction/neutral scores
+    return_all_scores=True   # get all 3 scores: entailment / contradiction / neutral
 )
 
 def get_retriever_and_llm():
-    """Return retriever (DuckDuckGo) and the NLI model."""
+    """Return DuckDuckGo retriever and the NLI model."""
     retriever = DDGS()
     return retriever, nli_model
 
@@ -28,14 +28,13 @@ def search_snippets(query, retriever, num_results=5):
             results.append(r["body"])
     return results
 
-def verify_claim(claim, retriever, llm, runs=3, top_k=5):
+def verify_claim(claim, retriever, llm, top_k=5):
     """
-    Verifies a claim using search + LLM/NLI.
-    Always assigns the highest scoring label instead of defaulting to uncertain.
+    Verifies a claim using search + NLI.
+    Picks the highest-confidence result from the snippets.
     """
     try:
-        docs = retriever.get_relevant_documents(claim)
-        snippets = [doc.page_content for doc in docs[:top_k]]
+        snippets = search_snippets(claim, retriever, num_results=top_k)
     except Exception as e:
         return {"claim": claim, "status": "uncertain", "evidence": f"Retriever error: {e}"}
 
@@ -48,22 +47,18 @@ def verify_claim(claim, retriever, llm, runs=3, top_k=5):
 
     for snippet in snippets:
         try:
-            prompt = f"""
-            Claim: "{claim}"
-            Evidence: "{snippet}"
-
-            result = llm.invoke(prompt).content.strip().upper()
+            # Compare snippet (premise) vs claim (hypothesis)
+            results = llm((snippet, claim), truncation=True)
+            # results looks like: [[{'label': 'CONTRADICTION', 'score': 0.01}, ... ]]
+            for r in results[0]:
+                if r["score"] > best_score:
+                    best_score = r["score"]
+                    best_label = r["label"].upper()
+                    best_snippet = snippet
         except Exception as e:
             continue
 
-        # crude scoring (could refine with logprobs if available)
-        score = 1.0  
-        if score > best_score:
-            best_score = score
-            best_label = result
-            best_snippet = snippet
-
-    # map to statuses
+    # Map labels to statuses
     if best_label == "ENTAILMENT":
         status = "verified"
     elif best_label == "CONTRADICTION":
@@ -72,4 +67,3 @@ def verify_claim(claim, retriever, llm, runs=3, top_k=5):
         status = "uncertain"
 
     return {"claim": claim, "status": status, "evidence": best_snippet}
-
