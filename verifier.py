@@ -3,26 +3,10 @@ from transformers import AutoTokenizer, AutoModelForSequenceClassification, pipe
 import torch.nn.functional as F
 from duckduckgo_search import DDGS
 import os
-import re
-import spacy # Import spacy for more robust keyword extraction
-
-# Load spaCy model for English (this will now assume it's installed via requirements.txt)
-try:
-    # No need for the download check here, as it should be installed
-    nlp = spacy.load("en_core_web_sm")
-    print("SpaCy model 'en_core_web_sm' loaded successfully.")
-except Exception as e:
-    # If it still fails, it's a deeper installation issue, but the permission error should be gone.
-    print(f"Error loading spaCy model 'en_core_web_sm': {e}")
-    print("Please ensure 'en_core_web_sm' is correctly installed via requirements.txt.")
-    # Exit or raise error if the model is crucial
-    raise SystemExit("SpaCy model 'en_core_web_sm' not found or failed to load.")
-
-
-# ... rest of your verifier.py code ...
-# (The rest of your verifier.py code from the previous response remains the same)
+import re # Import regex for query refinement
 
 # --- Device Setup ---
+# Prioritize CUDA if available, otherwise use CPU
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Verifier Device set to use {device}")
 
@@ -44,8 +28,9 @@ except Exception as e:
 label_map = {0: "CONTRADICTION", 1: "NEUTRAL", 2: "ENTAILMENT"}
 
 # --- NER Model for Query Generation ---
-MODEL_NAME_NER = "dslim/bert-base-NER"
+MODEL_NAME_NER = "dslim/bert-base-NER" # Using the same NER as claim_extractor for consistency
 try:
+    # Use device.index for pipeline if CUDA is available, otherwise -1 for CPU
     ner_pipeline = pipeline("ner", model=MODEL_NAME_NER, aggregation_strategy="simple",
                             device=device.index if device.type == 'cuda' else -1)
     print(f"Verifier: Successfully loaded NER pipeline '{MODEL_NAME_NER}' for query generation.")
@@ -58,71 +43,52 @@ except Exception as e:
                             device=device.index if device.type == 'cuda' else -1, cache_dir=cache_dir)
     print(f"Verifier: Successfully loaded NER pipeline '{MODEL_NAME_NER}' using cache directory: {cache_dir}.")
 
+
 def generate_search_query(claim):
     """
-    Generates a more refined search query based on the claim using NER and spaCy for keyword extraction.
-    Prioritizes proper nouns and specific keywords, aiming for direct answers.
+    Generates a more refined search query based on the claim using NER.
+    Prioritizes proper nouns and specific keywords.
     """
-    doc = nlp(claim)
-    query_parts = []
+    original_claim_lower = claim.lower()
     
-    # 1. Extract Named Entities using NER (from HuggingFace pipeline)
+    # 1. Use NER to extract key entities
     entities = ner_pipeline(claim)
+    key_phrases = []
+    
+    # Filter for relevant entity types (Person, Location, Organization, Miscellaneous)
     for entity in entities:
-        if len(entity['word'].split()) > 1:
-            query_parts.append(f'"{entity["word"]}"') # Phrase match for multi-word entities
+        # We want to be specific, so use quotes for multi-word entities
+        if len(entity['word'].split()) > 1: # Multi-word entity
+            key_phrases.append(f'"{entity["word"]}"')
+        else: # Single-word entity, less strict matching
+            key_phrases.append(entity['word'])
+
+    # 2. Add specific heuristics for common patterns if NER alone isn't enough
+    if "discovered" in original_claim_lower:
+        # If NER found who discovered it, great. Otherwise, try to infer.
+        # Example: "Albert Einstein discovered penicillin." -> "who discovered penicillin"
+        match = re.search(r'discovered ([\w\s]+)', original_claim_lower)
+        if match:
+            key_phrases.append(f"who discovered \"{match.group(1).strip()}\"")
         else:
-            query_parts.append(entity['word'])
-
-    # 2. Extract significant nouns and adjectives using spaCy POS tagging
-    # Filter for Nouns (NOUN, PROPN), Adjectives (ADJ), and Verbs (VERB)
-    for token in doc:
-        if token.pos_ in ["NOUN", "PROPN", "ADJ", "VERB"] and not token.is_stop and not token.is_punct and len(token.text) > 2:
-            # Only add if not already part of an NER entity (to avoid redundancy for proper nouns)
-            is_ner_entity = False
-            for entity in entities:
-                if token.text.lower() in entity['word'].lower(): # Simple check
-                    is_ner_entity = True
-                    break
-            if not is_ner_entity:
-                query_parts.append(token.lemma_) # Use lemma for better matching (e.g., "discovers" -> "discover")
-
-    # 3. Add context words if the query is too short or seems too generic
-    # Try to make the query sound like a factual inquiry
-    if len(query_parts) < 3 and ("is" in claim.lower() or "was" in claim.lower()):
-        query_parts.insert(0, "what is") # E.g., "what is Taj Mahal location"
-    elif len(query_parts) < 3:
-        query_parts.append("information")
+            key_phrases.append("who discovered")
     
-    # Remove duplicates and construct the query
-    final_query_components = list(set(query_parts))
+    # Prioritize key phrases identified by NER or specific heuristics
+    if key_phrases:
+        # Join with "AND" to ensure all terms are present in search
+        query_parts = list(set(key_phrases)) # Use set to remove duplicates
+        return ' AND '.join(query_parts) + " facts"
     
-    # Prioritize question-like structure if it makes sense, otherwise join with spaces
-    if any(q.startswith("who") or q.startswith("what") or q.startswith("where") for q in final_query_components):
-        final_query = ' '.join(final_query_components)
-    else:
-        final_query = ' AND '.join(final_query_components) # Use AND for more precise keyword matching
+    # 3. Fallback: Original claim with "facts" or "information"
+    return f"{claim} facts"
 
-    # Add "facts" or "details" explicitly if not too many components already
-    if "facts" not in final_query.lower() and "details" not in final_query.lower() and len(final_query_components) < 4:
-        final_query += " facts"
-    
-    # Fallback: if somehow nothing useful extracted, use the whole claim
-    if not final_query.strip():
-        return f"{claim} facts"
-    
-    print(f"  [DEBUG verifier.py] Raw query parts: {query_parts}")
-    print(f"  [DEBUG verifier.py] Final query string: {final_query}")
-    return final_query
-
-
-def search_snippets(claim_original, num_results=20): # Increased num_results to 20 to get more raw data
+def search_snippets(claim_original, num_results=10):
     """
     Searches DuckDuckGo for snippets relevant to the query.
     Takes the original claim, generates a search query from it, then searches.
-    Returns a list of filtered snippet bodies.
+    Returns a list of snippet bodies.
     """
-    all_raw_snippets = []
+    results = []
     search_query = generate_search_query(claim_original)
     
     print(f"\n[DEBUG verifier.py] Original claim for search: '{claim_original}'")
@@ -132,60 +98,30 @@ def search_snippets(claim_original, num_results=20): # Increased num_results to 
         with DDGS() as ddgs:
             ddgs_results = list(ddgs.text(search_query, max_results=num_results))
             
-            # Fallback if the generated query yields no results, try original claim, then keyword-only
+            # Fallback if the generated query yields no results, try original claim
             if not ddgs_results:
-                print(f"  [DEBUG verifier.py] No results for generated query '{search_query}', falling back to original claim search.")
+                print(f"  [DEBUG verifier.py] No results for generated query, falling back to original claim search.")
                 ddgs_results = list(ddgs.text(claim_original, max_results=num_results))
-                if not ddgs_results:
-                    print(f"  [DEBUG verifier.py] No results for original claim, trying keyword-only search.")
-                    # Simple keyword extraction for a very broad fallback
-                    keyword_query_fallback = ' '.join(re.findall(r'\b\w{3,}\b', claim_original.lower()))
-                    if keyword_query_fallback:
-                        ddgs_results = list(ddgs.text(keyword_query_fallback, max_results=num_results))
 
             for i, r in enumerate(ddgs_results):
-                if "body" in r and r["body"].strip():
-                    all_raw_snippets.append(r["body"])
-                    print(f"  [DEBUG verifier.py] Raw Snippet {i+1} (first 100 chars): {r['body'][:100]}...")
+                if "body" in r and r["body"].strip(): # Ensure snippet body is not empty
+                    results.append(r["body"])
+                    print(f"  [DEBUG verifier.py] Snippet {i+1} (first 100 chars): {r['body'][:100]}...")
                 else:
-                    print(f"  [DEBUG verifier.py] Raw Snippet {i+1} had no or empty 'body' key: {r}")
-            if not all_raw_snippets:
+                    print(f"  [DEBUG verifier.py] Snippet {i+1} had no or empty 'body' key: {r}")
+            if not results:
                 print("[DEBUG verifier.py] No substantial 'body' content found in any search results.")
     except Exception as e:
-        print(f"[ERROR verifier.py] DuckDuckGo search failed: {e}")
-        all_raw_snippets = []
-    
-    # --- Post-search Snippet Filtering and Ranking ---
-    if not all_raw_snippets:
-        return []
-
-    # Keywords from the claim for filtering
-    claim_keywords = set([token.lemma_.lower() for token in nlp(claim) if not token.is_stop and not token.is_punct and len(token.text) > 2])
-    
-    filtered_snippets = []
-    for snippet in all_raw_snippets:
-        snippet_doc = nlp(snippet)
-        snippet_words = set([token.lemma_.lower() for token in snippet_doc if not token.is_stop and not token.is_punct and len(token.text) > 2])
-        
-        # Calculate overlap score: count of claim keywords present in snippet
-        overlap_score = len(claim_keywords.intersection(snippet_words))
-        
-        # Filter out snippets with very low overlap or known generic "facts" phrases
-        if overlap_score > 0 and not any(phrase in snippet.lower() for phrase in ["wtf fun facts", "interesting facts that will change", "random & interesting facts", "collection of fun facts"]):
-            filtered_snippets.append((overlap_score, snippet))
-        else:
-            print(f"  [DEBUG verifier.py] Filtering out generic snippet (first 50 chars): {snippet[:50]}...")
-
-    # Sort snippets by overlap score (highest first) and return only the body
-    filtered_snippets.sort(key=lambda x: x[0], reverse=True)
-    return [s[1] for s in filtered_snippets[:num_results]] # Return up to num_results of the best ones
-
+        print(f"[ERROR verifier.py] DuckDuckGo search failed for query '{search_query}' or '{claim_original}': {e}")
+        results = []
+    return results
 
 def classify_nli(premise, hypothesis):
     """
     Runs NLI on (premise, hypothesis) and returns the best label and its score.
     Uses the pre-loaded tokenizer and model.
     """
+    # max_length for RoBERTa is typically 512
     inputs = tokenizer_nli(premise, hypothesis, return_tensors="pt", truncation=True, max_length=512).to(device)
     with torch.no_grad():
         logits = model_nli(**inputs).logits
@@ -194,40 +130,40 @@ def classify_nli(premise, hypothesis):
     label_id = int(probs.argmax())
     return label_map[label_id], float(probs[label_id])
 
-def verify_claim(claim, top_k=15): # Adjusted top_k to match search_snippets and be for NLI processing
+def verify_claim(claim, top_k=10):
     """
     Verifies a factual claim against search snippets using an NLI model.
-    Returns dict: {claim, status, evidence: list of snippets, best_snippet}
+    Returns dict: {claim, status, evidence: list of snippets}
     """
     print(f"\n[DEBUG verifier.py] Verifying claim: '{claim}' (top_k={top_k})")
-    snippets = search_snippets(claim, num_results=top_k) # Pass num_results here for filtered snippets
+    snippets = search_snippets(claim, num_results=top_k)
 
     if not snippets:
-        print(f"[DEBUG verifier.py] No *relevant* snippets available to verify the claim '{claim}'. Returning 'uncertain'.")
-        return {"claim": claim, "status": "uncertain", "evidence": [], "best_snippet": None}
+        print(f"[DEBUG verifier.py] No snippets available to verify the claim '{claim}'. Returning 'uncertain'.")
+        return {"claim": claim, "status": "uncertain", "evidence": []}
+
+    print(f"[DEBUG verifier.py] Type of 'snippets' before iteration: {type(snippets)}")
+    print(f"[DEBUG verifier.py] Number of snippets received: {len(snippets)}")
+    if snippets:
+        print(f"[DEBUG verifier.py] First snippet (first 100 chars): {snippets[0][:100]}...")
 
     best_status = "uncertain"
-    all_evidence_snippets = snippets # These are now the filtered ones
+    all_evidence_snippets = []
 
-    # Tunable confidence thresholds
-    STRONG_ENTAILMENT_THRESHOLD = 0.85 # Higher confidence for verified
-    WEAK_ENTAILMENT_THRESHOLD = 0.65  # Minimum for any entailment consideration
-    STRONG_CONTRADICTION_THRESHOLD = 0.90 # Very high confidence for hallucination
-    WEAK_CONTRADICTION_THRESHOLD = 0.70 # Minimum for any contradiction consideration
+    # Tunable confidence threshold for strong classifications
+    CONFIDENCE_THRESHOLD = 0.75 # Good balance, adjust if needed
 
-    # Track highest scores and associated snippets
+    # Track highest entailment and contradiction scores separately
     max_entailment_score = 0.0
     max_contradiction_score = 0.0
     
+    # Store the snippet that gave the highest entailment/contradiction score
     best_entailment_snippet = None
     best_contradiction_snippet = None
 
-    # Track count of strong signals
-    strong_entailment_count = 0
-    strong_contradiction_count = 0
-
     print("\n--- NLI Classification Results for Each Snippet ---")
     for i, snippet in enumerate(snippets):
+        all_evidence_snippets.append(snippet)
         try:
             label, score = classify_nli(snippet, claim)
             print(f"  [DEBUG verifier.py] Snippet {i+1} vs Claim:")
@@ -239,55 +175,37 @@ def verify_claim(claim, top_k=15): # Adjusted top_k to match search_snippets and
                 if score > max_entailment_score:
                     max_entailment_score = score
                     best_entailment_snippet = snippet
-                if score >= WEAK_ENTAILMENT_THRESHOLD: # Count even weaker ones if they contribute
-                    strong_entailment_count += 1
             elif label == "CONTRADICTION":
                 if score > max_contradiction_score:
                     max_contradiction_score = score
                     best_contradiction_snippet = snippet
-                if score >= WEAK_CONTRADICTION_THRESHOLD:
-                    strong_contradiction_count += 1
 
         except Exception as e:
             print(f"  [ERROR verifier.py] Error classifying snippet {i+1}: {e}")
             continue
     
-    # --- Advanced Decision Logic ---
-    # Give priority to very strong single signals or multiple strong signals
-    if max_contradiction_score >= STRONG_CONTRADICTION_THRESHOLD:
+    # --- Final Decision Logic after reviewing all snippets ---
+    # Prioritize contradiction if it's very strong, to highlight potential hallucinations more aggressively
+    if max_contradiction_score >= CONFIDENCE_THRESHOLD + 0.05: # Give contradiction a slight edge
         best_status = "hallucination"
-    elif max_entailment_score >= STRONG_ENTAILMENT_THRESHOLD:
+    elif max_entailment_score >= CONFIDENCE_THRESHOLD:
         best_status = "verified"
-    # If no single strong signal, look for a majority of weaker, but still significant, signals
-    elif strong_entailment_count > strong_contradiction_count and max_entailment_score >= WEAK_ENTAILMENT_THRESHOLD:
-        best_status = "verified"
-    elif strong_contradiction_count > strong_entailment_count and max_contradiction_score >= WEAK_CONTRADICTION_THRESHOLD:
-        best_status = "hallucination"
-    # If still ambiguous, compare the absolute max scores with a slight margin
-    elif max_entailment_score > max_contradiction_score + 0.1 and max_entailment_score >= WEAK_ENTAILMENT_THRESHOLD:
-        best_status = "verified"
-    elif max_contradiction_score > max_entailment_score + 0.1 and max_contradiction_score >= WEAK_CONTRADICTION_THRESHOLD:
+    elif max_contradiction_score >= CONFIDENCE_THRESHOLD: # If contradiction is just at threshold
         best_status = "hallucination"
     else:
         best_status = "uncertain"
 
     # Decide which snippet to return as 'best_snippet' for context in UI
-    final_context_snippet = None
     if best_status == "verified" and best_entailment_snippet:
         final_context_snippet = best_entailment_snippet
     elif best_status == "hallucination" and best_contradiction_snippet:
         final_context_snippet = best_contradiction_snippet
-    elif all_evidence_snippets: 
-        # For uncertain, or if best_X_snippet is None, try to provide *some* relevant snippet.
-        # Pick the one with the highest NLI score (entailment or contradiction) if above a minimal threshold
-        if max(max_entailment_score, max_contradiction_score) >= WEAK_ENTAILMENT_THRESHOLD - 0.1:
-            if max_entailment_score >= max_contradiction_score:
-                final_context_snippet = best_entailment_snippet if best_entailment_snippet else all_evidence_snippets[0]
-            else:
-                final_context_snippet = best_contradiction_snippet if best_contradiction_snippet else all_evidence_snippets[0]
-        else:
-            final_context_snippet = all_evidence_snippets[0] # Fallback to first if all NLI scores are very low
+    elif all_evidence_snippets: # If uncertain, just return the first snippet found for some context
+        final_context_snippet = all_evidence_snippets[0]
+    else:
+        final_context_snippet = None # Should not happen if all_evidence_snippets is empty
 
     print(f"\n[DEBUG verifier.py] Final decision for claim '{claim}': Status='{best_status}', Max Entailment={max_entailment_score:.4f}, Max Contradiction={max_contradiction_score:.4f}")
     
+    # Return all snippets for detailed view, but the best_snippet for the main 'evidence' in UI
     return {"claim": claim, "status": best_status, "evidence": all_evidence_snippets, "best_snippet": final_context_snippet}
