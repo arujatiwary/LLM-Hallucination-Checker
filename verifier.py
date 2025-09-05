@@ -6,13 +6,21 @@ import os
 import re
 import spacy # Import spacy for more robust keyword extraction
 
-# Load spaCy model for English (run `python -m spacy download en_core_web_sm` once)
+# Load spaCy model for English (this will now assume it's installed via requirements.txt)
 try:
+    # No need for the download check here, as it should be installed
     nlp = spacy.load("en_core_web_sm")
-except OSError:
-    print("Downloading spaCy model 'en_core_web_sm'...")
-    spacy.cli.download("en_core_web_sm")
-    nlp = spacy.load("en_core_web_sm")
+    print("SpaCy model 'en_core_web_sm' loaded successfully.")
+except Exception as e:
+    # If it still fails, it's a deeper installation issue, but the permission error should be gone.
+    print(f"Error loading spaCy model 'en_core_web_sm': {e}")
+    print("Please ensure 'en_core_web_sm' is correctly installed via requirements.txt.")
+    # Exit or raise error if the model is crucial
+    raise SystemExit("SpaCy model 'en_core_web_sm' not found or failed to load.")
+
+
+# ... rest of your verifier.py code ...
+# (The rest of your verifier.py code from the previous response remains the same)
 
 # --- Device Setup ---
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -81,7 +89,7 @@ def generate_search_query(claim):
 
     # 3. Add context words if the query is too short or seems too generic
     # Try to make the query sound like a factual inquiry
-    if len(query_parts) < 3 and "is" in claim.lower() or "was" in claim.lower():
+    if len(query_parts) < 3 and ("is" in claim.lower() or "was" in claim.lower()):
         query_parts.insert(0, "what is") # E.g., "what is Taj Mahal location"
     elif len(query_parts) < 3:
         query_parts.append("information")
