@@ -1,18 +1,20 @@
-import re
+from transformers import pipeline
+
+ner_pipeline = pipeline("ner", model="dslim/bert-base-NER", aggregation_strategy="simple")
 
 def extract_claims(text):
     """
-    Extract factual claims from text using regex-based sentence splitting.
-    Avoids spaCy dependency so it's lightweight and Streamlit Cloud friendly.
-    Returns a list of candidate claims.
+    Extracts factual-looking claims from text using NER as a proxy.
+    Right now, it just extracts sentences containing named entities.
     """
-    # Split on sentence-ending punctuation
-    sentences = re.split(r'(?<=[.!?])\s+', text)
-
+    sentences = text.split(".")
     claims = []
-    for sent in sentences:
-        claim = sent.strip()
-        if len(claim.split()) > 3:  # ignore fragments
-            claims.append(claim)
+
+    for sentence in sentences:
+        if not sentence.strip():
+            continue
+        entities = ner_pipeline(sentence)
+        if entities:  # only keep sentences with named entities
+            claims.append(sentence.strip())
 
     return claims
