@@ -22,7 +22,7 @@ if st.button("Check for Hallucinations"):
         else:
             st.subheader("Processing claims...")
             # Call verify_claim correctly with only the claim and top_k
-            results = [verify_claim(claim, top_k=5) for claim in claims]
+            results = [verify_claim(claim, top_k=10) for claim in claims] # Increased top_k default
 
             # --- Summary Metrics ---
             total = len(results)
@@ -43,7 +43,8 @@ if st.button("Check for Hallucinations"):
             # --- Annotated Output ---
             highlighted_text = input_text
             for result in results:
-                escaped_claim = re.escape(result["claim"]) # Escape special regex characters
+                # Use re.sub with escaped_claim for safety if claim contains regex special chars
+                escaped_claim = re.escape(result["claim"]) 
                 color = {
                     "verified": "#6cc644",      # green
                     "uncertain": "#f8c316",     # yellow
@@ -53,7 +54,7 @@ if st.button("Check for Hallucinations"):
                     f"<span style='background-color:{color}; "
                     f"padding:2px 4px; border-radius:4px;'>{result['claim']}</span>"
                 )
-                # Replace only first occurrence
+                # Replace only first occurrence of the claim
                 highlighted_text = re.sub(escaped_claim, replacement, highlighted_text, 1)
 
             st.subheader("📝 Annotated Output")
@@ -73,11 +74,18 @@ if st.button("Check for Hallucinations"):
                     f"<span style='color:{claim_color}; font-weight:bold'>{result['status'].upper()}</span>",
                     unsafe_allow_html=True
                 )
+                
+                # Display the single most relevant snippet directly under the claim
+                if result.get("best_snippet"): # Use .get() for safety
+                    st.caption(f"Best Evidence: {result['best_snippet']}")
+                elif result["evidence"]:
+                    st.caption(f"Evidence (first snippet): {result['evidence'][0]}")
+                else:
+                    st.caption("No specific evidence found.")
 
-                if result["evidence"]:
-                    with st.expander("See evidence snippets"):
-                        # Iterate through the list of evidence snippets
+
+                # Provide option to see all snippets
+                if result["evidence"] and len(result["evidence"]) > 1:
+                    with st.expander("See all collected evidence snippets"):
                         for i, ev_snippet in enumerate(result["evidence"]):
                             st.caption(f"• Snippet {i+1}: {ev_snippet}")
-                else:
-                    st.caption("No evidence snippets found.")
