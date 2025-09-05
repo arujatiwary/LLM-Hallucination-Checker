@@ -2,5 +2,6 @@ streamlit
 transformers
 torch
 duckduckgo-search
-seqeval 
-spacy
+seqeval
+spacy 
+en_core_web_sm 
