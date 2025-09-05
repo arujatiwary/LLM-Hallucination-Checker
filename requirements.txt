@@ -3,3 +3,4 @@ transformers
 torch
 duckduckgo-search
 seqeval 
+spacy
