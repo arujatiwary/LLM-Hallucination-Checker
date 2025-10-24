@@ -1,7 +1,7 @@
 import streamlit as st
 import re
 from claim_extractor import extract_claims
-from verifier import verify_claim
+from verifier import verify_claim, ensure_models
 
 st.set_page_config(page_title="Hallucination Detector", layout="wide")
 
@@ -13,6 +13,9 @@ if st.button("Check for Hallucinations"):
     if not input_text.strip():
         st.warning("Please enter some text.")
     else:
+        with st.spinner("Loading models (first run may take a minute)..."):
+            ensure_models()
+
         claims = extract_claims(input_text)
 
         if not claims:
