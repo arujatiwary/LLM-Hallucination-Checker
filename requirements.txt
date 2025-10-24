@@ -1,13 +1,8 @@
-python-dotenv>=1.0.1
-numpy<2.0           
-torch==2.2.2        
-transformers==4.41.2
-sentence-transformers==2.7.0
-duckduckgo-search==8.1.1
-spacy==3.8.1
-en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0.tar.gz
 streamlit==1.49.1
-rich==13.9.2
-
+duckduckgo-search==8.1.1
+transformers==4.56.0
+sentence-transformers==2.2.0
+spacy==3.8.7
+python-dotenv>=1.0.1
 requests>=2.32.3
-tqdm>=4.66.5
+rich==14.2.0
