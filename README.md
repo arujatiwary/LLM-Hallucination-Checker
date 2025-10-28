@@ -34,9 +34,8 @@ Each claim passes through the following stages:
    - Label **NEUTRAL** → irrelevant or insufficient evidence
 5. Decision Logic 
    Based on maximum entailment and contradiction scores:
-if contradiction >= 0.80 → hallucination
-elif entailment >= 0.75 → verified
-elif contradiction >= 0.75 → hallucination
+if contradiction >= 0.80 → hallucination, 
+elif entailment >= 0.75 → verified, 
 else → uncertain
 6. Visualization (Streamlit) – The paragraph is color-coded:
 - 🟩 Green: Verified  
